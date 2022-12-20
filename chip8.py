@@ -163,12 +163,14 @@ class C8Computer:
             raise OpCodeNotImplementedException
         if increment_pc:
             self.PC += 2
+        self.debug_dump()
 
 class C8Screen:
-    def __init__(self, window, xsize = 64, ysize = 32):
+    def __init__(self, window, pygame, xsize = 64, ysize = 32):
         # self.vram = [[0 for i in range(64)] for j in range(32)]
         self.xsize = xsize
         self.ysize = ysize
+        self.pygame = pygame
         self.vram = array('B', [0 for i in range(self.xsize * self.ysize)])
         self.window = window
         self.clear()
@@ -176,6 +178,7 @@ class C8Screen:
     def clear(self):
         for i in range(self.xsize * self.ysize):
             self.vram[i] = 0
+        self.draw()
 
     def setpx(self, x, y, val):
         assert val in (0, 1)
@@ -197,7 +200,7 @@ class C8Screen:
         collision = False
 
         for i in range(numpx):
-            if (val >> i) & 0x1:
+            if (val << i) & 0x80:
                 # 0 means do nothing, so only treat the 1 case
                 if self.vram[vramcell] == 1:
                     collision = True
@@ -219,6 +222,7 @@ class C8Screen:
                 for i in range(SCALE_FACTOR):
                     for j in range(SCALE_FACTOR):
                         self.window.set_at((startx + i, starty + j), color)
+        pygame.display.update()
 
 def main():
 
@@ -235,7 +239,7 @@ def main():
     beep.set_volume(0.1)
 
     run = True
-    myscreen = C8Screen(window)
+    myscreen = C8Screen(window, pygame)
     display_cycle = 0
     px = py = 0
 
@@ -265,12 +269,13 @@ def main():
             '''
 
         # Other CHIP-8 authors have said the game crawls if pygame display is updated each cycle
+        '''
         if display_cycle == 0:
             pygame.display.flip()
             display_cycle = DISPLAY_CYCLES
         else:
             display_cycle -= 1
-
+        '''
     pygame.quit()
 
 if __name__ == "__main__":
