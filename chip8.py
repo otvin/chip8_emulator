@@ -1,11 +1,39 @@
 import pygame
 from array import array
+import datetime
+import random
 from time import sleep
 
 SCALE_FACTOR = 16
 DISPLAY_CYCLES = 0
 PIXEL_OFF = (0, 0, 0)
 PIXEL_ON = (255, 255, 255)
+
+# The keyboard layout for the CHIP-8 assumes:
+#   1 2 3 C
+#   4 5 6 D
+#   7 8 9 E
+#   A 0 B F
+#
+# Mapping that to our keyboard we use the keys starting with 1, 2, 3, 4
+KEYMAPPING = {
+    pygame.K_1: 0x01,
+    pygame.K_2: 0x02,
+    pygame.K_3: 0x03,
+    pygame.K_4: 0x0C,
+    pygame.K_q: 0x04,
+    pygame.K_w: 0x05,
+    pygame.K_e: 0x06,
+    pygame.K_r: 0x0D,
+    pygame.K_a: 0x07,
+    pygame.K_s: 0x08,
+    pygame.K_d: 0x09,
+    pygame.K_f: 0x0E,
+    pygame.K_z: 0x0A,
+    pygame.K_x: 0x00,
+    pygame.K_c: 0x0B,
+    pygame.K_v: 0x0F
+}
 
 class InvalidOpCodeException(Exception):
     pass
@@ -30,7 +58,7 @@ def build_pygame_sound_samples():
 
 class C8Computer:
 
-    def __init__(self):
+    def __init__(self, beep):
         # 4096 Bytes of RAM
         self.RAM = array('B', [0 for i in range(4096)])
         # The 16 registers are named V0..VF
@@ -38,12 +66,16 @@ class C8Computer:
         # Special-purpose 16-bit register; low 12 are used for an address
         self.I = 0
         self.delay_register = 0
+        self.delay_register_last_tick_time = None
         self.sound_register = 0
+        self.sound_register_last_tick_time = None
         # Program Counter
         self.PC = 0x200
         # One could use RAM for the stack and use a stack pointer but this is easier
         self.stack = []
         self.load_font_sprites()
+        self.beep = beep
+        self.key_pressed = None
 
     def debug_dump(self):
         outfile = open("debug.txt", "w")
@@ -135,14 +167,65 @@ class C8Computer:
         self.V[0xF] = collision
         screen.draw()
 
+
+    def decrement_sound_delay_registers(self):
+        curtime = datetime.datetime.now()
+        if self.delay_register > 0:
+            tickdiff = ((curtime - self.delay_register_last_tick_time).microseconds) // 1666
+            if tickdiff > 0:
+                self.delay_register -= tickdiff
+                if self.delay_register < 0:
+                    self.delay_register = 0
+                    self.delay_register_last_tick_time = None
+                else:
+                    self.delay_register_last_tick_time = curtime
+        if self.sound_register > 0:
+            tickdiff = ((curtime - self.sound_register_last_tick_time).microseconds) // 1666
+            if tickdiff > 0:
+                self.sound_register -= tickdiff
+                if self.sound_register < 0:
+                    self.sound_register = 0
+                    self.sound_register_last_tick_time = None
+                    self.beep.stop()
+                else:
+                    self.sound_register_last_tick_time = curtime
+
     def cycle(self, screen):
+        # decrement timers
+        if self.delay_register > 0 or self.sound_register > 0:
+            self.decrement_sound_delay_registers()
+
         opcode = self.fetch()
+        print("{}: {}".format(str(datetime.datetime.now()), hex(opcode)))
         increment_pc = True
         if opcode == 0x00E0:
             screen.clear()
+        elif opcode == 0x00EE:
+            assert len(self.stack) > 0
+            self.PC = self.stack.pop()
         elif opcode >> 12 == 0x1:
             self.PC = opcode & 0xFFF
             increment_pc = False
+        elif opcode >> 12 == 0x2:
+            self.stack.append(self.PC)
+            self.PC = opcode & 0xFFF
+            increment_pc = False
+        elif opcode >> 12 == 0x3:
+            # skip next instruction if Vx = kk
+            whichreg = opcode >> 8 & 0xF
+            if self.V[whichreg] == opcode & 0xFF:
+                self.PC += 2
+        elif opcode >> 12 == 0x4:
+            # skip next instruction if Vx != kk
+            whichreg = opcode >> 8 & 0xF
+            if self.V[whichreg] != opcode & 0xFF:
+                self.PC += 2
+        elif opcode >> 12 == 0x5:
+            # skip next instruction if Vx = Vy
+            reg1 = opcode >> 8 & 0xF
+            reg2 = opcode >> 4 & 0xF
+            if self.V[reg1] == self.V[reg2]:
+                self.PC += 2
         elif opcode >> 12 == 0x6:
             whichreg = opcode >> 8 & 0xF
             self.V[whichreg] = opcode & 0xFF
@@ -155,12 +238,111 @@ class C8Computer:
             else:
                 self.V[0xF] = 0
             self.V[whichreg] = newval
+        elif opcode >> 12 == 0x8:
+            reg1 = opcode >> 8 & 0xF
+            reg2 = opcode >> 4 & 0xF
+            vx = self.V[reg1]
+            vy = self.V[reg2]
+            oper = opcode & 0xF
+            if oper == 0x0:
+                self.V[reg1] = vy
+            elif oper == 0x1:
+                self.V[reg1] = vx | vy
+            elif oper == 0x2:
+                self.V[reg1] = vx & vy
+            elif oper == 0x3:
+                self.V[reg1] = vx ^ vy
+            elif oper == 0x4:
+                sum = vx + vy
+                if sum > 255:
+                    carry = 1
+                else:
+                    carry = 0
+                self.V[reg1] = sum & 0xFF
+                self.V[0xF] = carry
+            elif oper == 0x5:
+                if vx > vy:
+                    notborrow = 1
+                else: notborrow = 0
+                self.V[reg1] = (vx - vy) & 0xFF
+                self.V[0xF] = notborrow
+            elif oper == 0x6:  # Shift Right by 1
+                lsb = vx & 0x1
+                self.V[reg1] = vx >> 1
+                self.V[0xF] = lsb
+            elif oper == 0x7:
+                if vy > vx:
+                    notborrow = 1
+                else:
+                    notborrow = 0
+                self.V[reg1] = (vy - vx) & 0xFF
+                self.V[0xF] = notborrow
+            elif oper == 0xE:  # Shift Left by 1
+                msb = vx & 0x80
+                if msb:
+                    self.V[0xF] = 0x1
+                else:
+                    self.V[0xF] = 0x0
+                self.V[reg1] = (vx << 1 & 0xFF)
+            else:
+                raise OpCodeNotImplementedException(hex(opcode))
+        elif opcode >> 12 == 0x9 and opcode & 0xF == 0:
+            reg1 = opcode >> 8 & 0xF
+            reg2 = opcode >> 4 & 0xF
+            vx = self.V[reg1]
+            vy = self.V[reg2]
+            if vx != vy:
+                self.PC += 2
         elif opcode >> 12 == 0xA:
             self.I = opcode & 0xFFF
+        elif opcode >> 12 == 0xB:
+            self.PC = (opcode & 0xFFF) + self.V[0]
+            increment_pc = False
+        elif opcode >> 12 == 0xC:
+            reg = opcode >> 8 & 0xF
+            kk = opcode & 0xFF
+            self.V[reg] = random.randrange(0, 255) & kk
         elif opcode >> 12 == 0xD:
             self.do_display_instruction(opcode, screen)
+        elif opcode >> 12 == 0xF:
+            oper = opcode & 0xFF
+            reg = (opcode >> 8) & 0xF
+            if oper == 0x07:
+                self.V[reg] = self.delay_register
+            elif oper == 0x0A:
+                if self.key_pressed is None:
+                    increment_pc = False  # do nothing
+                else:
+                    raise OpCodeNotImplementedException(hex(opcode))
+            elif oper == 0x15:
+                self.delay_register = self.V[reg]
+                if self.delay_register > 0:
+                    self.delay_register_last_tick_time = datetime.datetime.now()
+            elif oper == 0x18:
+                self.sound_register = self.V[reg]
+                if self.sound_register > 0:
+                    self.sound_register_last_tick_time = datetime.datetime.now()
+                    self.beep.play(-1)
+            elif oper == 0x1E:
+                # I don't believe we check for overflow here.
+                self.I += self.V[reg]
+                self.I &= 0xFFF
+            elif oper == 0x29:
+                # each character is 5 bytes, 0 starts at 0x00 in memory
+                assert (self.V[reg] <= 0xF)
+                self.I = 5 * self.V[reg]
+            elif oper == 0x33:
+                val = self.V[reg]
+                hundreds = val // 100
+                tens = (val - hundreds) // 10
+                ones = val % 10
+                self.RAM[self.I] = hundreds
+                self.RAM[self.I + 1] = tens
+                self.RAM[self.I + 2] = ones
+            else:
+                raise OpCodeNotImplementedException(hex(opcode))
         else:
-            raise OpCodeNotImplementedException
+            raise OpCodeNotImplementedException(hex(opcode))
         if increment_pc:
             self.PC += 2
         self.debug_dump()
@@ -226,9 +408,6 @@ class C8Screen:
 
 def main():
 
-    c8 = C8Computer()
-    c8.load_rom("IBMLogo.ch8")
-
     pygame.mixer.pre_init(44100, -16, 1, 1024)
     pygame.init()
     window = pygame.display.set_mode((64 * SCALE_FACTOR, 32 * SCALE_FACTOR))
@@ -237,6 +416,10 @@ def main():
 
     beep = pygame.mixer.Sound(build_pygame_sound_samples())
     beep.set_volume(0.1)
+
+    c8 = C8Computer(beep)
+    # c8.load_rom("IBMLogo.ch8")
+    c8.load_rom("BC_test.ch8")
 
     run = True
     myscreen = C8Screen(window, pygame)
@@ -248,25 +431,20 @@ def main():
             if event.type == pygame.QUIT:
                 run = False
                 c8.debug_dump()
+            elif event.type == pygame.KEYDOWN:
+                print(event.key)
+                c8.key_pressed = KEYMAPPING[event.key]
+            elif event.type == pygame.KEYUP:
+                # we can get into a weird state if multiple keys are pressed, one, one is let up, and the other is
+                # pressed.
+                c8.key_pressed = None
+
             try:
                 c8.cycle(myscreen)
             except:
                 c8.debug_dump()
                 pygame.display.flip()
                 raise
-
-            '''
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                myscreen.setpx(px,py,1)
-                myscreen.draw()
-                px += 1
-                if px % 2 == 0:
-                    py += 1
-            elif event.type == pygame.KEYDOWN:
-                beep.play(-1)
-            elif event.type == pygame.KEYUP:
-                beep.stop()
-            '''
 
         # Other CHIP-8 authors have said the game crawls if pygame display is updated each cycle
         '''
