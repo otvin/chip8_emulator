@@ -304,6 +304,19 @@ class C8Computer:
             self.V[reg] = random.randrange(0, 255) & kk
         elif opcode >> 12 == 0xD:
             self.do_display_instruction(opcode, screen)
+        elif opcode >> 12 == 0xE:
+            if opcode & 0xFF == 0x9E:
+                reg = opcode >> 8 & 0xF
+                if self.key_pressed is not None and self.key_pressed == self.V[reg]:
+                    self.PC += 2
+            elif opcode & 0xFF == 0xA1:
+                reg = opcode >> 8 & 0xF
+                if self.key_pressed is None:
+                    self.PC += 2
+                elif self.key_pressed != self.V[reg]:
+                    self.PC += 2
+            else:
+                raise OpCodeNotImplementedException(hex(opcode))
         elif opcode >> 12 == 0xF:
             oper = opcode & 0xFF
             reg = (opcode >> 8) & 0xF
@@ -313,7 +326,8 @@ class C8Computer:
                 if self.key_pressed is None:
                     increment_pc = False  # do nothing
                 else:
-                    raise OpCodeNotImplementedException(hex(opcode))
+                    reg = opcode >> 8 & 0xF
+                    self.V[reg] = self.key_pressed
             elif oper == 0x15:
                 self.delay_register = self.V[reg]
                 if self.delay_register > 0:
@@ -334,11 +348,19 @@ class C8Computer:
             elif oper == 0x33:
                 val = self.V[reg]
                 hundreds = val // 100
-                tens = (val - hundreds) // 10
+                tens = (val - (100 * hundreds)) // 10
                 ones = val % 10
                 self.RAM[self.I] = hundreds
                 self.RAM[self.I + 1] = tens
                 self.RAM[self.I + 2] = ones
+            elif oper == 0x55:
+                x = (opcode >> 8) & 0xF
+                for i in range(x + 1):
+                    self.RAM[self.I + i] = self.V[i]
+            elif oper == 0x65:
+                x = (opcode >> 8) & 0xF
+                for i in range(x + 1):
+                    self.V[i] = self.RAM[self.I + i]
             else:
                 raise OpCodeNotImplementedException(hex(opcode))
         else:
@@ -348,7 +370,7 @@ class C8Computer:
         self.debug_dump()
 
 class C8Screen:
-    def __init__(self, window, pygame, xsize = 64, ysize = 32):
+    def __init__(self, window, pygame, xsize=64, ysize=32):
         # self.vram = [[0 for i in range(64)] for j in range(32)]
         self.xsize = xsize
         self.ysize = ysize
@@ -371,7 +393,11 @@ class C8Screen:
     def xor8px(self, x, y, val):
         assert 0 <= val <= 0xFF
         assert 0 <= x < self.xsize
-        assert 0 <= y <= self.ysize
+        assert 0 <= y
+
+        if y > self.ysize:
+            # off screen
+            return
 
         # xors the 8 cells from (x,y) to (x+7,y) with the bits in val
         vramcell = (y * self.xsize) + x
@@ -420,6 +446,9 @@ def main():
     c8 = C8Computer(beep)
     # c8.load_rom("IBMLogo.ch8")
     c8.load_rom("BC_test.ch8")
+    # c8.load_rom("c8_test.c8")
+    # c8.load_rom("test_opcode.ch8")
+    # c8.load_rom("chip8-test-suite.ch8")
 
     run = True
     myscreen = C8Screen(window, pygame)
@@ -432,19 +461,19 @@ def main():
                 run = False
                 c8.debug_dump()
             elif event.type == pygame.KEYDOWN:
-                print(event.key)
-                c8.key_pressed = KEYMAPPING[event.key]
+                if event.key in KEYMAPPING.keys():
+                    c8.key_pressed = KEYMAPPING[event.key]
             elif event.type == pygame.KEYUP:
                 # we can get into a weird state if multiple keys are pressed, one, one is let up, and the other is
                 # pressed.
                 c8.key_pressed = None
 
-            try:
-                c8.cycle(myscreen)
-            except:
-                c8.debug_dump()
-                pygame.display.flip()
-                raise
+        try:
+            c8.cycle(myscreen)
+        except:
+            c8.debug_dump()
+            pygame.display.flip()
+            raise
 
         # Other CHIP-8 authors have said the game crawls if pygame display is updated each cycle
         '''
