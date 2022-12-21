@@ -9,7 +9,8 @@ PIXEL_OFF = (0, 0, 0)
 PIXEL_ON = (255, 255, 255)
 
 # Config options to pass tests
-INCREMENT_I_FX55_FX65 = True
+INCREMENT_I_FX55_FX65 = False  # False is the modern way; True matches original
+SHIFT_VY_8XY6_8XYE = False  # False is the modern way; True matches original
 
 # The keyboard layout for the CHIP-8 assumes:
 #   1 2 3 C
@@ -268,6 +269,11 @@ class C8Computer:
                 self.V[reg1] = (vx - vy) & 0xFF
                 self.V[0xF] = notborrow
             elif oper == 0x6:  # Shift Right by 1
+                if SHIFT_VY_8XY6_8XYE:
+                    # Original: copied vy into vx, then shifted vx
+                    # Modern: shifted vx in place, ignored vy
+                    # See: https://tobiasvl.github.io/blog/write-a-chip-8-emulator/#8xy6-and-8xye-shift
+                    vx = vy
                 lsb = vx & 0x1
                 self.V[reg1] = vx >> 1
                 self.V[0xF] = lsb
@@ -279,6 +285,8 @@ class C8Computer:
                 self.V[reg1] = (vy - vx) & 0xFF
                 self.V[0xF] = notborrow
             elif oper == 0xE:  # Shift Left by 1
+                if SHIFT_VY_8XY6_8XYE:
+                    vx = vy
                 msb = vx & 0x80
                 self.V[reg1] = (vx << 1 & 0xFF)
                 if msb:
@@ -379,7 +387,6 @@ class C8Computer:
             raise OpCodeNotImplementedException(hex(opcode))
         if increment_pc:
             self.PC += 2
-        self.debug_dump()
 
 class C8Screen:
     def __init__(self, window, pygame, xsize=64, ysize=32):
@@ -444,7 +451,7 @@ class C8Screen:
 
 def main():
 
-    global INCREMENT_I_FX55_FX65
+    global INCREMENT_I_FX55_FX65, SHIFT_VY_8XY6_8XYE
 
     pygame.mixer.pre_init(44100, -16, 1, 1024)
     pygame.init()
@@ -456,6 +463,7 @@ def main():
     beep.set_volume(0.1)
 
     c8 = C8Computer(beep)
+
     c8.load_rom("IBMLogo.ch8")  # PASSES
 
     # Both of these tests require that I not be incremented in Fx55 and Fx65
@@ -470,13 +478,14 @@ def main():
 
     # https://github.com/Timendus/chip8-test-suite/
     # INCREMENT_I_FX55_FX65 = True  # to be faithful to the CHIP-8
+    # SHIFT_VY_8XY6_8XYE = True
     # c8.load_rom("chip8-test-suite.ch8")  # PASSES but haven't tested keyboard yet
 
     run = True
     myscreen = C8Screen(window, pygame)
-    display_cycle = 0
-    px = py = 0
 
+    start_time = datetime.datetime.now()
+    num_instr = 0
     while run:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -492,10 +501,18 @@ def main():
 
         try:
             c8.cycle(myscreen)
+            num_instr += 1
         except:
             c8.debug_dump()
             pygame.display.flip()
             raise
+    end_time = datetime.datetime.now()
+    duration = (end_time - start_time).total_seconds()
+
+    print("Start: {}".format(start_time))
+    print("End: {}".format(end_time))
+    print("Duration: {} sec.".format(duration))
+    print("Performance: {} instructions per second".format(num_instr / duration))
 
     pygame.quit()
 
