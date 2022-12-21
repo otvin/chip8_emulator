@@ -149,14 +149,16 @@ class C8Computer:
 
     def fetch(self):
         # All instructions start on even memory addresses
-        assert (self.PC % 2 == 0)
+        # assert (self.PC % 2 == 0)
         # Cannot exceed RAM boundary for programs
         assert (0x200 <= self.PC <= 0xFFE)
         return self.RAM[self.PC] << 8 | self.RAM[self.PC + 1]
 
     def do_display_instruction(self, opcode, screen):
-        x = self.V[opcode >> 8 & 0xF]
-        y = self.V[opcode >> 4 & 0xF]
+        # See https://laurencescotford.com/chip-8-on-the-cosmac-vip-drawing-sprites/ for behavior
+        # if sprite is being entirely written off screen.
+        x = self.V[opcode >> 8 & 0xF] & 0x3F
+        y = self.V[opcode >> 4 & 0xF] & 0x1F
         n = opcode & 0xF  # number of lines in the sprite to read
         memloc = self.I
         collision = 0
@@ -196,7 +198,7 @@ class C8Computer:
             self.decrement_sound_delay_registers()
 
         opcode = self.fetch()
-        print("{}: {}".format(str(datetime.datetime.now()), hex(opcode)))
+        print("{}: {} (PC:{})".format(str(datetime.datetime.now()), hex(opcode).upper(), hex(self.PC).upper()))
         increment_pc = True
         if opcode == 0x00E0:
             screen.clear()
@@ -229,15 +231,9 @@ class C8Computer:
         elif opcode >> 12 == 0x6:
             whichreg = opcode >> 8 & 0xF
             self.V[whichreg] = opcode & 0xFF
-        elif opcode >> 12 == 0x7:
+        elif opcode >> 12 == 0x7:  # Add without a carry bit
             whichreg = opcode >> 8 & 0xF
-            newval = self.V[whichreg] + (opcode & 0xFF)
-            if newval > 255:
-                self.V[0xF] = 1
-                newval &= 0xFF
-            else:
-                self.V[0xF] = 0
-            self.V[whichreg] = newval
+            self.V[whichreg]  = (self.V[whichreg] + (opcode & 0xFF)) & 0xFF
         elif opcode >> 12 == 0x8:
             reg1 = opcode >> 8 & 0xF
             reg2 = opcode >> 4 & 0xF
@@ -248,10 +244,13 @@ class C8Computer:
                 self.V[reg1] = vy
             elif oper == 0x1:
                 self.V[reg1] = vx | vy
+                self.V[0xF] = 0
             elif oper == 0x2:
                 self.V[reg1] = vx & vy
+                self.V[0xF] = 0
             elif oper == 0x3:
                 self.V[reg1] = vx ^ vy
+                self.V[0xF] = 0
             elif oper == 0x4:
                 sum = vx + vy
                 if sum > 255:
@@ -279,11 +278,11 @@ class C8Computer:
                 self.V[0xF] = notborrow
             elif oper == 0xE:  # Shift Left by 1
                 msb = vx & 0x80
+                self.V[reg1] = (vx << 1 & 0xFF)
                 if msb:
                     self.V[0xF] = 0x1
                 else:
                     self.V[0xF] = 0x0
-                self.V[reg1] = (vx << 1 & 0xFF)
             else:
                 raise OpCodeNotImplementedException(hex(opcode))
         elif opcode >> 12 == 0x9 and opcode & 0xF == 0:
@@ -354,13 +353,17 @@ class C8Computer:
                 self.RAM[self.I + 1] = tens
                 self.RAM[self.I + 2] = ones
             elif oper == 0x55:
+                # Note that in the original CHIP-8 on the COSMAC VIP, I was incremented during this
+                # loop.  See: https://laurencescotford.com/chip-8-on-the-cosmac-vip-loading-and-saving-variables/
                 x = (opcode >> 8) & 0xF
                 for i in range(x + 1):
-                    self.RAM[self.I + i] = self.V[i]
+                    self.RAM[self.I] = self.V[i]
+                    self.I += 1
             elif oper == 0x65:
                 x = (opcode >> 8) & 0xF
                 for i in range(x + 1):
-                    self.V[i] = self.RAM[self.I + i]
+                    self.V[i] = self.RAM[self.I]
+                    self.I += 1
             else:
                 raise OpCodeNotImplementedException(hex(opcode))
         else:
@@ -392,18 +395,16 @@ class C8Screen:
 
     def xor8px(self, x, y, val):
         assert 0 <= val <= 0xFF
-        assert 0 <= x < self.xsize
+        assert 0 <= x
         assert 0 <= y
-
-        if y > self.ysize:
-            # off screen
-            return
 
         # xors the 8 cells from (x,y) to (x+7,y) with the bits in val
         vramcell = (y * self.xsize) + x
 
         # avoid wrapping
         numpx = min([8, self.xsize - x])
+        if y >= 32:
+            return
 
         collision = False
 
@@ -444,11 +445,19 @@ def main():
     beep.set_volume(0.1)
 
     c8 = C8Computer(beep)
-    # c8.load_rom("IBMLogo.ch8")
-    c8.load_rom("BC_test.ch8")
-    # c8.load_rom("c8_test.c8")
-    # c8.load_rom("test_opcode.ch8")
-    # c8.load_rom("chip8-test-suite.ch8")
+    c8.load_rom("IBMLogo.ch8")  # PASSES
+
+    # I had these passing, but based on the documentation with Fx55 / Fx65 I started failing these
+    # tests.  Based on the Timendus test below, I think I am ok though.
+    # https://github.com/daniel5151/AC8E/tree/master/roms
+    # c8.load_rom("BC_test.ch8")  # FAILS with error "16" which says I have an Fx55 / Fx65 problem
+    # https://github.com/Skosulor/c8int/tree/master/test
+    # c8.load_rom("c8_test.c8")  # FAILS with error "18" which says I have an Fx55 / Fx65 problem
+
+    # c8.load_rom("test_opcode.ch8")   # PASSES
+
+    # https://github.com/Timendus/chip8-test-suite/
+    # c8.load_rom("chip8-test-suite.ch8")  # PASSES but haven't tested keyboard yet
 
     run = True
     myscreen = C8Screen(window, pygame)
