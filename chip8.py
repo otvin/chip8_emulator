@@ -5,9 +5,11 @@ import random
 from time import sleep
 
 SCALE_FACTOR = 16
-DISPLAY_CYCLES = 0
 PIXEL_OFF = (0, 0, 0)
 PIXEL_ON = (255, 255, 255)
+
+# Config options to pass tests
+INCREMENT_I_FX55_FX65 = True
 
 # The keyboard layout for the CHIP-8 assumes:
 #   1 2 3 C
@@ -355,15 +357,22 @@ class C8Computer:
             elif oper == 0x55:
                 # Note that in the original CHIP-8 on the COSMAC VIP, I was incremented during this
                 # loop.  See: https://laurencescotford.com/chip-8-on-the-cosmac-vip-loading-and-saving-variables/
+                # However, modern interpreters do not increment I.  So need a config option in order to pass.
                 x = (opcode >> 8) & 0xF
+                oldI = self.I
                 for i in range(x + 1):
                     self.RAM[self.I] = self.V[i]
                     self.I += 1
+                if not INCREMENT_I_FX55_FX65:
+                    self.I = oldI
             elif oper == 0x65:
                 x = (opcode >> 8) & 0xF
+                oldI = self.I
                 for i in range(x + 1):
                     self.V[i] = self.RAM[self.I]
                     self.I += 1
+                if not INCREMENT_I_FX55_FX65:
+                    self.I = oldI
             else:
                 raise OpCodeNotImplementedException(hex(opcode))
         else:
@@ -435,6 +444,8 @@ class C8Screen:
 
 def main():
 
+    global INCREMENT_I_FX55_FX65
+
     pygame.mixer.pre_init(44100, -16, 1, 1024)
     pygame.init()
     window = pygame.display.set_mode((64 * SCALE_FACTOR, 32 * SCALE_FACTOR))
@@ -447,16 +458,18 @@ def main():
     c8 = C8Computer(beep)
     c8.load_rom("IBMLogo.ch8")  # PASSES
 
-    # I had these passing, but based on the documentation with Fx55 / Fx65 I started failing these
-    # tests.  Based on the Timendus test below, I think I am ok though.
+    # Both of these tests require that I not be incremented in Fx55 and Fx65
     # https://github.com/daniel5151/AC8E/tree/master/roms
+    # INCREMENT_I_FX55_FX65 = False
     # c8.load_rom("BC_test.ch8")  # FAILS with error "16" which says I have an Fx55 / Fx65 problem
     # https://github.com/Skosulor/c8int/tree/master/test
+    # INCREMENT_I_FX55_FX65 = False
     # c8.load_rom("c8_test.c8")  # FAILS with error "18" which says I have an Fx55 / Fx65 problem
 
     # c8.load_rom("test_opcode.ch8")   # PASSES
 
     # https://github.com/Timendus/chip8-test-suite/
+    # INCREMENT_I_FX55_FX65 = True  # to be faithful to the CHIP-8
     # c8.load_rom("chip8-test-suite.ch8")  # PASSES but haven't tested keyboard yet
 
     run = True
@@ -484,14 +497,6 @@ def main():
             pygame.display.flip()
             raise
 
-        # Other CHIP-8 authors have said the game crawls if pygame display is updated each cycle
-        '''
-        if display_cycle == 0:
-            pygame.display.flip()
-            display_cycle = DISPLAY_CYCLES
-        else:
-            display_cycle -= 1
-        '''
     pygame.quit()
 
 if __name__ == "__main__":
