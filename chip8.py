@@ -78,7 +78,10 @@ class C8Computer:
         self.stack = []
         self.load_font_sprites()
         self.beep = beep
-        self.key_pressed = None
+        self.key_pressed = None  # used for the Ex9E and ExA1 instructions
+        self.blocking_on_fx0a = False
+        self.fx0a_key_pressed = None
+        self.fx0a_key_up = None
 
     def debug_dump(self):
         outfile = open("debug.txt", "w")
@@ -201,7 +204,7 @@ class C8Computer:
             self.decrement_sound_delay_registers()
 
         opcode = self.fetch()
-        print("{}: {} (PC:{})".format(str(datetime.datetime.now()), hex(opcode).upper(), hex(self.PC).upper()))
+        # print("{}: {} (PC:{})".format(str(datetime.datetime.now()), hex(opcode).upper(), hex(self.PC).upper()))
         increment_pc = True
         if opcode == 0x00E0:
             screen.clear()
@@ -332,11 +335,20 @@ class C8Computer:
             if oper == 0x07:
                 self.V[reg] = self.delay_register
             elif oper == 0x0A:
-                if self.key_pressed is None:
-                    increment_pc = False  # do nothing
+                if not self.blocking_on_fx0a:
+                    self.blocking_on_fx0a = True
+                    increment_pc = False
+                    self.fx0a_key_pressed = None
+                    self.fx0a_key_up = None
                 else:
-                    reg = opcode >> 8 & 0xF
-                    self.V[reg] = self.key_pressed
+                    if self.fx0a_key_up is None:
+                        increment_pc = False  # do nothing
+                    else:
+                        reg = opcode >> 8 & 0xF
+                        self.V[reg] = self.fx0a_key_up
+                        self.blocking_on_fx0a = False
+                        self.fx0a_key_up = None
+                        self.fx0a_key_pressed = None
             elif oper == 0x15:
                 self.delay_register = self.V[reg]
                 if self.delay_register > 0:
@@ -464,7 +476,7 @@ def main():
 
     c8 = C8Computer(beep)
 
-    c8.load_rom("IBMLogo.ch8")  # PASSES
+    # c8.load_rom("IBMLogo.ch8")  # PASSES
 
     # Both of these tests require that I not be incremented in Fx55 and Fx65
     # https://github.com/daniel5151/AC8E/tree/master/roms
@@ -477,9 +489,9 @@ def main():
     # c8.load_rom("test_opcode.ch8")   # PASSES
 
     # https://github.com/Timendus/chip8-test-suite/
-    # INCREMENT_I_FX55_FX65 = True  # to be faithful to the CHIP-8
-    # SHIFT_VY_8XY6_8XYE = True
-    # c8.load_rom("chip8-test-suite.ch8")  # PASSES but haven't tested keyboard yet
+    INCREMENT_I_FX55_FX65 = True  # to be faithful to the CHIP-8
+    SHIFT_VY_8XY6_8XYE = True
+    c8.load_rom("chip8-test-suite.ch8")  # PASSES but haven't tested keyboard yet
 
     run = True
     myscreen = C8Screen(window, pygame)
@@ -494,10 +506,16 @@ def main():
             elif event.type == pygame.KEYDOWN:
                 if event.key in KEYMAPPING.keys():
                     c8.key_pressed = KEYMAPPING[event.key]
+                    if c8.blocking_on_fx0a:
+                        c8.fx0a_key_pressed = KEYMAPPING[event.key]
             elif event.type == pygame.KEYUP:
                 # we can get into a weird state if multiple keys are pressed, one, one is let up, and the other is
                 # pressed.
                 c8.key_pressed = None
+                if c8.blocking_on_fx0a:
+                    if c8.fx0a_key_pressed == KEYMAPPING[event.key]:
+                        c8.fx0a_key_up = KEYMAPPING[event.key]
+                        c8.fx0a_key_pressed = None
 
         try:
             c8.cycle(myscreen)
