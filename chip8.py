@@ -4,7 +4,7 @@ import datetime
 import random
 from time import sleep
 
-SCALE_FACTOR = 16
+SCALE_FACTOR = 8
 PIXEL_OFF = (0, 0, 0)
 PIXEL_ON = (255, 255, 255)
 
@@ -17,6 +17,7 @@ INSTRUCTION_DELAY = 250
 # tweak this per ROM - how many microseconds to wait before drawing.  Smaller means more frequent draws, which
 # makes things slower
 DISPLAY_DELAY = 5000
+CYCLE_WAIT = 1  # number of ms between cycles
 
 # The keyboard layout for the CHIP-8 assumes:
 #   1 2 3 C
@@ -188,7 +189,7 @@ class C8Computer:
             tickdiff = ((curtime - self.delay_register_last_tick_time).microseconds) // 16666
             if tickdiff > 0:
                 self.delay_register -= tickdiff
-                if self.delay_register < 0:
+                if self.delay_register <= 0:
                     self.delay_register = 0
                     self.delay_register_last_tick_time = None
                 else:
@@ -197,7 +198,7 @@ class C8Computer:
             tickdiff = ((curtime - self.sound_register_last_tick_time).microseconds) // 16666
             if tickdiff > 0:
                 self.sound_register -= tickdiff
-                if self.sound_register < 0:
+                if self.sound_register <= 0:
                     self.sound_register = 0
                     self.sound_register_last_tick_time = None
                     self.beep.stop()
@@ -467,12 +468,12 @@ class C8Screen:
                 for i in range(SCALE_FACTOR):
                     for j in range(SCALE_FACTOR):
                         self.window.set_at((startx + i, starty + j), color)
-        pygame.display.update()
+        pygame.display.flip()
         self.needs_draw = False
         self.last_draw_time = datetime.datetime.now()
 def main():
 
-    global INCREMENT_I_FX55_FX65, SHIFT_VY_8XY6_8XYE, INSTRUCTION_DELAY, DISPLAY_DELAY
+    global INCREMENT_I_FX55_FX65, SHIFT_VY_8XY6_8XYE, INSTRUCTION_DELAY, DISPLAY_DELAY, CYCLE_WAIT
 
     pygame.mixer.pre_init(44100, -16, 1, 1024)
     pygame.init()
@@ -502,9 +503,17 @@ def main():
     # SHIFT_VY_8XY6_8XYE = True
     # c8.load_rom("chip8-test-suite.ch8")  # PASSES but haven't tested keyboard yet
 
-    INSTRUCTION_DELAY = 350
-    DISPLAY_DELAY = 8333
-    c8.load_rom("BRIX.ch8")
+    # INSTRUCTION_DELAY = 150 # 350
+    # DISPLAY_DELAY = 600 # 8333
+    # c8.load_rom("BRIX.ch8")
+
+    # INSTRUCTION_DELAY = 150  # 350
+    # DISPLAY_DELAY = 600  # 8333
+    # c8.load_rom("Tetris.ch8")
+
+    INSTRUCTION_DELAY = 150  # 350
+    DISPLAY_DELAY = 600  # 8333
+    c8.load_rom("AstroDodge.ch8")
 
     run = True
     myscreen = C8Screen(window, pygame)
@@ -518,6 +527,8 @@ def main():
     last_instruction_time = datetime.datetime.now()
 
     while run:
+        #q = pygame.time.delay(CYCLE_WAIT)
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 run = False
