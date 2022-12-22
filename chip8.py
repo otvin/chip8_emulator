@@ -11,6 +11,12 @@ PIXEL_ON = (255, 255, 255)
 # Config options to pass tests
 INCREMENT_I_FX55_FX65 = False  # False is the modern way; True matches original
 SHIFT_VY_8XY6_8XYE = False  # False is the modern way; True matches original
+# Tweak this per ROM - how many microseconds to wait before executing an instruction.  Smaller means more frequent
+# instruction executions, which makes things faster.
+INSTRUCTION_DELAY = 250
+# tweak this per ROM - how many microseconds to wait before drawing.  Smaller means more frequent draws, which
+# makes things slower
+DISPLAY_DELAY = 5000
 
 # The keyboard layout for the CHIP-8 assumes:
 #   1 2 3 C
@@ -173,13 +179,13 @@ class C8Computer:
                 collision = 1
             memloc += 1
         self.V[0xF] = collision
-        screen.draw()
+        screen.needs_draw = True
 
 
     def decrement_sound_delay_registers(self):
         curtime = datetime.datetime.now()
         if self.delay_register > 0:
-            tickdiff = ((curtime - self.delay_register_last_tick_time).microseconds) // 1666
+            tickdiff = ((curtime - self.delay_register_last_tick_time).microseconds) // 16666
             if tickdiff > 0:
                 self.delay_register -= tickdiff
                 if self.delay_register < 0:
@@ -188,7 +194,7 @@ class C8Computer:
                 else:
                     self.delay_register_last_tick_time = curtime
         if self.sound_register > 0:
-            tickdiff = ((curtime - self.sound_register_last_tick_time).microseconds) // 1666
+            tickdiff = ((curtime - self.sound_register_last_tick_time).microseconds) // 16666
             if tickdiff > 0:
                 self.sound_register -= tickdiff
                 if self.sound_register < 0:
@@ -402,13 +408,14 @@ class C8Computer:
 
 class C8Screen:
     def __init__(self, window, pygame, xsize=64, ysize=32):
-        # self.vram = [[0 for i in range(64)] for j in range(32)]
         self.xsize = xsize
         self.ysize = ysize
         self.pygame = pygame
         self.vram = array('B', [0 for i in range(self.xsize * self.ysize)])
         self.window = window
         self.clear()
+        self.needs_draw = False
+        self.last_draw_time = datetime.datetime.now()
 
     def clear(self):
         for i in range(self.xsize * self.ysize):
@@ -445,6 +452,7 @@ class C8Screen:
                 else:
                     self.vram[vramcell] = 1
             vramcell += 1
+        self.needs_draw = True
         return(collision)
 
     def draw(self):
@@ -460,10 +468,11 @@ class C8Screen:
                     for j in range(SCALE_FACTOR):
                         self.window.set_at((startx + i, starty + j), color)
         pygame.display.update()
-
+        self.needs_draw = False
+        self.last_draw_time = datetime.datetime.now()
 def main():
 
-    global INCREMENT_I_FX55_FX65, SHIFT_VY_8XY6_8XYE
+    global INCREMENT_I_FX55_FX65, SHIFT_VY_8XY6_8XYE, INSTRUCTION_DELAY, DISPLAY_DELAY
 
     pygame.mixer.pre_init(44100, -16, 1, 1024)
     pygame.init()
@@ -489,15 +498,25 @@ def main():
     # c8.load_rom("test_opcode.ch8")   # PASSES
 
     # https://github.com/Timendus/chip8-test-suite/
-    INCREMENT_I_FX55_FX65 = True  # to be faithful to the CHIP-8
-    SHIFT_VY_8XY6_8XYE = True
-    c8.load_rom("chip8-test-suite.ch8")  # PASSES but haven't tested keyboard yet
+    # INCREMENT_I_FX55_FX65 = True  # to be faithful to the CHIP-8
+    # SHIFT_VY_8XY6_8XYE = True
+    # c8.load_rom("chip8-test-suite.ch8")  # PASSES but haven't tested keyboard yet
+
+    INSTRUCTION_DELAY = 350
+    DISPLAY_DELAY = 8333
+    c8.load_rom("BRIX.ch8")
 
     run = True
     myscreen = C8Screen(window, pygame)
 
     start_time = datetime.datetime.now()
     num_instr = 0
+
+    timer_event = pygame.USEREVENT + 1
+    # pygame.time.set_timer(timer_event, 1)  # 17ms ~= 60Hz
+
+    last_instruction_time = datetime.datetime.now()
+
     while run:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -516,14 +535,29 @@ def main():
                     if c8.fx0a_key_pressed == KEYMAPPING[event.key]:
                         c8.fx0a_key_up = KEYMAPPING[event.key]
                         c8.fx0a_key_pressed = None
+            elif event.type == timer_event:
+                pass
+                # if myscreen.needs_draw:
+                #    myscreen.draw()
 
-        try:
-            c8.cycle(myscreen)
-            num_instr += 1
-        except:
-            c8.debug_dump()
-            pygame.display.flip()
-            raise
+
+        curtime = datetime.datetime.now()
+        tickdiff = ((curtime - last_instruction_time).microseconds) // INSTRUCTION_DELAY
+        # aiming for 700 instructions per second
+        if tickdiff > 0:
+            try:
+                c8.cycle(myscreen)
+                num_instr += 1
+                last_instruction_time = curtime
+                if myscreen.needs_draw:
+                    displaydiff = ((curtime - myscreen.last_draw_time).microseconds) // DISPLAY_DELAY
+                    if displaydiff > 0:
+                        myscreen.draw()
+
+            except:
+                c8.debug_dump()
+                pygame.display.flip()
+                raise
     end_time = datetime.datetime.now()
     duration = (end_time - start_time).total_seconds()
 
