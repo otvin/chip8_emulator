@@ -2,7 +2,6 @@ import pygame
 from array import array
 import datetime
 import random
-from time import sleep
 
 SCALE_FACTOR = 8
 PIXEL_OFF = (0, 0, 0)
@@ -14,10 +13,7 @@ SHIFT_VY_8XY6_8XYE = False  # False is the modern way; True matches original
 # Tweak this per ROM - how many microseconds to wait before executing an instruction.  Smaller means more frequent
 # instruction executions, which makes things faster.
 INSTRUCTION_DELAY = 250
-# tweak this per ROM - how many microseconds to wait before drawing.  Smaller means more frequent draws, which
-# makes things slower
-DISPLAY_DELAY = 5000
-CYCLE_WAIT = 1  # number of ms between cycles
+
 
 # The keyboard layout for the CHIP-8 assumes:
 #   1 2 3 C
@@ -46,10 +42,6 @@ KEYMAPPING = {
 }
 
 class InvalidOpCodeException(Exception):
-    pass
-
-
-class OpCodeNotImplementedException(Exception):
     pass
 
 
@@ -136,9 +128,13 @@ class C8Computer:
                 outfile.write('\n')
             else:
                 outfile.write('\t')
-        outfile.write("delay register: 0x{}\n".format(self.delay_register.upper()[2:]))
-        outfile.write("sound register: 0x{}\n".format(self.sound_register.upper()[2:]))
-        outfile.write("stack: {}\n".format(self.stack))
+        outfile.write("delay register: 0x{}\n".format(hex(self.delay_register).upper()[2:]))
+        outfile.write("sound register: 0x{}\n".format(hex(self.sound_register).upper()[2:]))
+        outfile.write("stack: [")
+        if len(self.stack) > 0:
+            for i in range(len(self.stack) - 1):
+                outfile.write("0x{}, ".format(hex(self.stack[i]).upper()[2:]))
+            outfile.write("0x{}]\n".format(hex(self.stack[-1]).upper()[2:]))
         outfile.write("\n\nRAM:\n")
         for i in range(4096):
             if i % 32 == 0:
@@ -203,22 +199,6 @@ class C8Computer:
         assert (0x200 <= self.PC <= 0xFFE)
         return self.RAM[self.PC] << 8 | self.RAM[self.PC + 1]
 
-    def do_display_instruction_old(self, opcode, screen):
-        # See https://laurencescotford.com/chip-8-on-the-cosmac-vip-drawing-sprites/ for behavior
-        # if sprite is being entirely written off screen.
-        x = self.V[opcode >> 8 & 0xF] & 0x3F
-        y = self.V[opcode >> 4 & 0xF] & 0x1F
-        n = opcode & 0xF  # number of lines in the sprite to read
-        memloc = self.I
-        collision = 0
-        for i in range(n):
-            if screen.xor8px(x, y + i, self.RAM[memloc]):
-                collision = 1
-            memloc += 1
-        self.V[0xF] = collision
-        screen.needs_draw = True
-
-
     def decrement_sound_delay_registers(self):
         curtime = datetime.datetime.now()
         if self.delay_register > 0:
@@ -240,210 +220,6 @@ class C8Computer:
                     self.beep.stop()
                 else:
                     self.sound_register_last_tick_time = curtime
-
-    def cycle_old(self, screen):
-        # decrement timers
-        if self.delay_register > 0 or self.sound_register > 0:
-            self.decrement_sound_delay_registers()
-
-        opcode = self.fetch()
-        # print("{}: {} (PC:{})".format(str(datetime.datetime.now()), hex(opcode).upper(), hex(self.PC).upper()))
-        increment_pc = True
-        if opcode == 0x00E0:
-            screen.clear()
-        elif opcode == 0x00EE:
-            assert len(self.stack) > 0
-            self.PC = self.stack.pop()
-        elif opcode >> 12 == 0x1:
-            self.PC = opcode & 0xFFF
-            increment_pc = False
-        elif opcode >> 12 == 0x2:
-            self.stack.append(self.PC)
-            self.PC = opcode & 0xFFF
-            increment_pc = False
-        elif opcode >> 12 == 0x3:
-            # skip next instruction if Vx = kk
-            whichreg = opcode >> 8 & 0xF
-            if self.V[whichreg] == opcode & 0xFF:
-                self.PC += 2
-        elif opcode >> 12 == 0x4:
-            # skip next instruction if Vx != kk
-            whichreg = opcode >> 8 & 0xF
-            if self.V[whichreg] != opcode & 0xFF:
-                self.PC += 2
-        elif opcode >> 12 == 0x5:
-            # skip next instruction if Vx = Vy
-            reg1 = opcode >> 8 & 0xF
-            reg2 = opcode >> 4 & 0xF
-            if self.V[reg1] == self.V[reg2]:
-                self.PC += 2
-        elif opcode >> 12 == 0x6:
-            whichreg = opcode >> 8 & 0xF
-            self.V[whichreg] = opcode & 0xFF
-        elif opcode >> 12 == 0x7:  # Add without a carry bit
-            whichreg = opcode >> 8 & 0xF
-            self.V[whichreg]  = (self.V[whichreg] + (opcode & 0xFF)) & 0xFF
-        elif opcode >> 12 == 0x8:
-            reg1 = opcode >> 8 & 0xF
-            reg2 = opcode >> 4 & 0xF
-            vx = self.V[reg1]
-            vy = self.V[reg2]
-            oper = opcode & 0xF
-            if oper == 0x0:
-                self.V[reg1] = vy
-            elif oper == 0x1:
-                self.V[reg1] = vx | vy
-                self.V[0xF] = 0
-            elif oper == 0x2:
-                self.V[reg1] = vx & vy
-                self.V[0xF] = 0
-            elif oper == 0x3:
-                self.V[reg1] = vx ^ vy
-                self.V[0xF] = 0
-            elif oper == 0x4:
-                sum = vx + vy
-                if sum > 255:
-                    carry = 1
-                else:
-                    carry = 0
-                self.V[reg1] = sum & 0xFF
-                self.V[0xF] = carry
-            elif oper == 0x5:
-                if vx > vy:
-                    notborrow = 1
-                else:
-                    notborrow = 0
-                self.V[reg1] = (vx - vy) & 0xFF
-                self.V[0xF] = notborrow
-            elif oper == 0x6:  # Shift Right by 1
-                if SHIFT_VY_8XY6_8XYE:
-                    # Original: copied vy into vx, then shifted vx
-                    # Modern: shifted vx in place, ignored vy
-                    # See: https://tobiasvl.github.io/blog/write-a-chip-8-emulator/#8xy6-and-8xye-shift
-                    vx = vy
-                lsb = vx & 0x1
-                self.V[reg1] = vx >> 1
-                self.V[0xF] = lsb
-            elif oper == 0x7:
-                if vy > vx:
-                    notborrow = 1
-                else:
-                    notborrow = 0
-                self.V[reg1] = (vy - vx) & 0xFF
-                self.V[0xF] = notborrow
-            elif oper == 0xE:  # Shift Left by 1
-                if SHIFT_VY_8XY6_8XYE:
-                    vx = vy
-                msb = vx & 0x80
-                self.V[reg1] = (vx << 1 & 0xFF)
-                if msb:
-                    self.V[0xF] = 0x1
-                else:
-                    self.V[0xF] = 0x0
-            else:
-                raise OpCodeNotImplementedException(hex(opcode))
-        elif opcode >> 12 == 0x9 and opcode & 0xF == 0:
-            reg1 = opcode >> 8 & 0xF
-            reg2 = opcode >> 4 & 0xF
-            vx = self.V[reg1]
-            vy = self.V[reg2]
-            if vx != vy:
-                self.PC += 2
-        elif opcode >> 12 == 0xA:
-            self.I = opcode & 0xFFF
-        elif opcode >> 12 == 0xB:
-            self.PC = (opcode & 0xFFF) + self.V[0]
-            increment_pc = False
-        elif opcode >> 12 == 0xC:
-            reg = opcode >> 8 & 0xF
-            kk = opcode & 0xFF
-            self.V[reg] = random.randrange(0, 255) & kk
-        elif opcode >> 12 == 0xD:
-            self.do_display_instruction(opcode, screen)
-        elif opcode >> 12 == 0xE:
-            if opcode & 0xFF == 0x9E:
-                reg = opcode >> 8 & 0xF
-                if self.key_pressed is not None and self.key_pressed == self.V[reg]:
-                    self.PC += 2
-            elif opcode & 0xFF == 0xA1:
-                reg = opcode >> 8 & 0xF
-                if self.key_pressed is None:
-                    self.PC += 2
-                elif self.key_pressed != self.V[reg]:
-                    self.PC += 2
-            else:
-                raise OpCodeNotImplementedException(hex(opcode))
-        elif opcode >> 12 == 0xF:
-            oper = opcode & 0xFF
-            reg = (opcode >> 8) & 0xF
-            if oper == 0x07:
-                self.V[reg] = self.delay_register
-            elif oper == 0x0A:
-                if not self.blocking_on_fx0a:
-                    self.blocking_on_fx0a = True
-                    increment_pc = False
-                    self.fx0a_key_pressed = None
-                    self.fx0a_key_up = None
-                else:
-                    if self.fx0a_key_up is None:
-                        increment_pc = False  # do nothing
-                    else:
-                        reg = opcode >> 8 & 0xF
-                        self.V[reg] = self.fx0a_key_up
-                        self.blocking_on_fx0a = False
-                        self.fx0a_key_up = None
-                        self.fx0a_key_pressed = None
-            elif oper == 0x15:
-                self.delay_register = self.V[reg]
-                if self.delay_register > 0:
-                    self.delay_register_last_tick_time = datetime.datetime.now()
-            elif oper == 0x18:
-                self.sound_register = self.V[reg]
-                if self.sound_register > 0:
-                    self.sound_register_last_tick_time = datetime.datetime.now()
-                    self.beep.play(-1)
-            elif oper == 0x1E:
-                # I don't believe we check for overflow here.
-                self.I += self.V[reg]
-                self.I &= 0xFFF
-            elif oper == 0x29:
-                # each character is 5 bytes, 0 starts at 0x00 in memory
-                assert (self.V[reg] <= 0xF)
-                self.I = 5 * self.V[reg]
-            elif oper == 0x33:
-                val = self.V[reg]
-                hundreds = val // 100
-                tens = (val - (100 * hundreds)) // 10
-                ones = val % 10
-                self.RAM[self.I] = hundreds
-                self.RAM[self.I + 1] = tens
-                self.RAM[self.I + 2] = ones
-            elif oper == 0x55:
-                # Note that in the original CHIP-8 on the COSMAC VIP, I was incremented during this
-                # loop.  See: https://laurencescotford.com/chip-8-on-the-cosmac-vip-loading-and-saving-variables/
-                # However, modern interpreters do not increment I.  So need a config option in order to pass.
-                x = (opcode >> 8) & 0xF
-                oldI = self.I
-                for i in range(x + 1):
-                    self.RAM[self.I] = self.V[i]
-                    self.I += 1
-                if not INCREMENT_I_FX55_FX65:
-                    self.I = oldI
-            elif oper == 0x65:
-                x = (opcode >> 8) & 0xF
-                oldI = self.I
-                for i in range(x + 1):
-                    self.V[i] = self.RAM[self.I]
-                    self.I += 1
-                if not INCREMENT_I_FX55_FX65:
-                    self.I = oldI
-            else:
-                raise OpCodeNotImplementedException(hex(opcode))
-        else:
-            raise OpCodeNotImplementedException(hex(opcode))
-        if increment_pc:
-            self.PC += 2
-
 
     def _0_opcodes(self, opcode, vx, vy, n, kk, nnn):
         if opcode == 0x00E0:
@@ -476,7 +252,6 @@ class C8Computer:
     def _3xkk(self, opcode, vx, vy, n, kk, nnn):
         # 3xkk - SE Vx, byte
         # Skip next instruction if Vx == kk
-        print("{} : vx:{} / kk:{}".format(hex(opcode), hex(self.V[vx]), hex(kk)))
         if self.V[vx] == kk:
             self.PC += 2
         return True
@@ -506,10 +281,8 @@ class C8Computer:
     def _7xkk(self, opcode, vx, vy, n, kk, nnn):
         # 7xkk - ADD Vx, byte
         # Add value in kk to vx, stores result in vx, does NOT set overflow flag
-        print("{} : old {} / new {}".format(opcode, self.V[vx], (self.V[vx] + kk) & 0xFF))
         self.V[vx] = (self.V[vx] + kk) & 0xFF
         return True
-
 
     def invalid_op(self, opcode, vx, vy):
         raise InvalidOpCodeException(opcode)
@@ -522,20 +295,26 @@ class C8Computer:
 
     def _8xy1(self, opcode, vx, vy):
         # 8xy1 - OR Vx, Vy
-        # Set Vx = Vx OR Vy
+        # Set Vx = Vx OR Vy.
+        # Historical quick: this op also set VF = 0
         self.V[vx] = self.V[vx] | self.V[vy]
+        self.V[0xF] = 0
         return True
 
     def _8xy2(self, opcode, vx, vy):
         # 8xy2 - AND Vx, Vy
         # Set Vx = Vx AND Vy
+        # Historical quick: this op also set VF = 0
         self.V[vx] = self.V[vx] & self.V[vy]
+        self.V[0xF] = 0
         return True
 
     def _8xy3(self, opcode, vx, vy):
         # 8xy3 - XOR Vx, Vy
         # Set Vx = Vx XOR Vy
+        # Historical quick: this op also set VF = 0
         self.V[vx] = self.V[vx] ^ self.V[vy]
+        self.V[0xF] = 0
         return True
 
     def _8xy4(self, opcode, vx, vy):
@@ -593,7 +372,10 @@ class C8Computer:
             self.V[vx] = self.V[vy]
         msb = self.V[vx] & 0x80
         self.V[vx] = (self.V[vx] << 1) & 0xFF
-        self.V[0xF] = msb
+        if msb:
+            self.V[0xF] = 0x1
+        else:
+            self.V[0xF] = 0x0
         return True
 
     def _8_opcodes(self, opcode, vx, vy, n, kk, nnn):
@@ -837,7 +619,7 @@ class C8Screen:
                     self.vram[vramcell] = 1
             vramcell += 1
         self.needs_draw = True
-        return(collision)
+        return collision
 
     def draw(self):
         for x in range(64):
@@ -856,7 +638,7 @@ class C8Screen:
         self.last_draw_time = datetime.datetime.now()
 def main():
 
-    global INCREMENT_I_FX55_FX65, SHIFT_VY_8XY6_8XYE, INSTRUCTION_DELAY, DISPLAY_DELAY, CYCLE_WAIT
+    global INCREMENT_I_FX55_FX65, SHIFT_VY_8XY6_8XYE, INSTRUCTION_DELAY
 
     pygame.mixer.pre_init(44100, -16, 1, 1024)
     pygame.init()
@@ -870,22 +652,9 @@ def main():
     myscreen = C8Screen(window, pygame)
     c8 = C8Computer(myscreen, beep)
 
-    # c8.load_rom("IBMLogo.ch8")  # PASSES
-
-    # Both of these tests require that I not be incremented in Fx55 and Fx65
-    # https://github.com/daniel5151/AC8E/tree/master/roms
-    # INCREMENT_I_FX55_FX65 = False
-    # c8.load_rom("BC_test.ch8")  # FAILS with error "16" which says I have an Fx55 / Fx65 problem
-    # https://github.com/Skosulor/c8int/tree/master/test
-    # INCREMENT_I_FX55_FX65 = False
-    # c8.load_rom("c8_test.c8")  # FAILS with error "18" which says I have an Fx55 / Fx65 problem
-
-    # c8.load_rom("test_opcode.ch8")   # PASSES
-
     # https://github.com/Timendus/chip8-test-suite/
     INCREMENT_I_FX55_FX65 = True  # to be faithful to the CHIP-8
     SHIFT_VY_8XY6_8XYE = True
-    INSTRUCTION_DELAY = 1 # run fast
     c8.load_rom("chip8-test-suite.ch8")
 
     # INSTRUCTION_DELAY = 150 # 350
@@ -902,7 +671,6 @@ def main():
 
     run = True
 
-
     start_time = datetime.datetime.now()
     num_instr = 0
 
@@ -912,8 +680,6 @@ def main():
     last_instruction_time = datetime.datetime.now()
 
     while run:
-        #q = pygame.time.delay(CYCLE_WAIT)
-
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 run = False
@@ -928,14 +694,12 @@ def main():
                 # pressed.
                 c8.key_pressed = None
                 if c8.blocking_on_fx0a:
-                    if c8.fx0a_key_pressed == KEYMAPPING[event.key]:
-                        c8.fx0a_key_up = KEYMAPPING[event.key]
-                        c8.fx0a_key_pressed = None
+                    if event.key in KEYMAPPING.keys():
+                        if c8.fx0a_key_pressed == KEYMAPPING[event.key]:
+                            c8.fx0a_key_up = KEYMAPPING[event.key]
+                            c8.fx0a_key_pressed = None
             elif event.type == timer_event:
                 c8.decrement_sound_delay_registers()
-                pass
-                # if myscreen.needs_draw:
-                #    myscreen.draw()
 
 
         curtime = datetime.datetime.now()
@@ -946,10 +710,7 @@ def main():
                 c8.cycle(myscreen)
                 num_instr += 1
                 last_instruction_time = curtime
-                # if myscreen.needs_draw:
                 if num_instr % 8 == 0:   # logic is that the CPU runs at 500 Hz and display at 60 Hz or 1/8th, roughly
-                    # displaydiff = ((curtime - myscreen.last_draw_time).microseconds) // DISPLAY_DELAY
-                    # if displaydiff > 0:
                     myscreen.draw()
 
             except:
@@ -965,6 +726,7 @@ def main():
     print("Performance: {} instructions per second".format(num_instr / duration))
 
     pygame.quit()
+
 
 if __name__ == "__main__":
     # call the main function

@@ -1,2 +1,3 @@
 This will be a CHIP-8 emulator/interpreter.
-Test.
+
+Opcode descriptions sourced from [Cowgod's CHIP-8 Technical Reference](http://devernay.free.fr/hacks/chip8/C8TECH10.HTM#2.2).  Note that this document has two known "errors."  The original Fx55 and Fx65 incremented I.  However, this is not needed in modern architectures and was not included in this guide, so most modern emulators do not increment I.  Similarly, The original 8xy6 and 8xyE copied Vy into Vx and then shifted.  However, this document says that Vx is shifted and Vy is ignored.  There are configuration options that need to be set depending on whether a modern or an original ROM is being executed. 
