@@ -68,7 +68,7 @@ def build_pygame_sound_samples():
 
 class C8Computer:
 
-    def __init__(self, beep):
+    def __init__(self, screen, beep):
         # 4096 Bytes of RAM
         self.RAM = array('B', [0 for i in range(4096)])
         # The 16 registers are named V0..VF
@@ -85,14 +85,50 @@ class C8Computer:
         self.stack = []
         self.load_font_sprites()
         self.beep = beep
+        self.screen = screen
         self.key_pressed = None  # used for the Ex9E and ExA1 instructions
         self.blocking_on_fx0a = False
         self.fx0a_key_pressed = None
         self.fx0a_key_up = None
 
+        # Using a list of functions to speed the lookup, vs. doing a big nested
+        # if/else.  There is one instruction for each of the high-order nibbles
+        # 1, 2, 3, 4, 5, 6, 7, 9, A, B, and C.  The others (0, 8, E, F) have
+        # multiple.
+        self.operation_list = [
+            self._0_opcodes, self._1nnn, self._2nnn, self._3xkk, self._4xkk, self._5xy0,
+            self._6xkk, self._7xkk, self._8_opcodes, self._9xy0, self._Annn, self._Bnnn,
+            self._Cxkk, self._Dxyn, self._E_opcodes, self._F_opcodes
+        ]
+
+        # opcodes beginning with 8 can be determined based on the least-significant
+        # nibble (0..7 and E)
+        self._8_operations = [
+            self._8xy0, self._8xy1, self._8xy2, self._8xy3, self._8xy4, self._8xy5,
+            self._8xy6, self._8xy7, self.invalid_op, self.invalid_op,
+            self.invalid_op, self.invalid_op, self.invalid_op, self.invalid_op,
+            self._8xyE, self.invalid_op
+        ]
+
+        # opcodes beginning with F can be determined based on the least_significant
+        # byte (07, 0A, 15, 18, 1E, 29, 33, 55, and 65).  Since this is sparse,
+        # will use a dictionary.
+        self._F_operations = {
+            0x07 : self._Fx07,
+            0x0A : self._Fx0A,
+            0x15 : self._Fx15,
+            0x18 : self._Fx18,
+            0x1E : self._Fx1E,
+            0x29 : self._Fx29,
+            0x33 : self._Fx33,
+            0x55 : self._Fx55,
+            0x65 : self._Fx65
+        }
+
     def debug_dump(self):
         outfile = open("debug.txt", "w")
         outfile.write("PC: 0x{}\n".format(hex(self.PC).upper()[2:]))
+        outfile.write("Next instruction: 0x{}\n".format(hex(self.RAM[self.PC] << 8 | self.RAM[self.PC + 1]).upper()[2:]))
         outfile.write("I: 0x{}\n".format(hex(self.I).upper()[2:]))
         for i in range(16):
             outfile.write("V{}: 0x{}".format(hex(i).upper()[2], hex(self.V[i])[2:].zfill(2).upper()))
@@ -100,8 +136,8 @@ class C8Computer:
                 outfile.write('\n')
             else:
                 outfile.write('\t')
-        outfile.write("delay register: {}\n".format(self.delay_register))
-        outfile.write("sound register: {}\n".format(self.sound_register))
+        outfile.write("delay register: 0x{}\n".format(self.delay_register.upper()[2:]))
+        outfile.write("sound register: 0x{}\n".format(self.sound_register.upper()[2:]))
         outfile.write("stack: {}\n".format(self.stack))
         outfile.write("\n\nRAM:\n")
         for i in range(4096):
@@ -167,7 +203,7 @@ class C8Computer:
         assert (0x200 <= self.PC <= 0xFFE)
         return self.RAM[self.PC] << 8 | self.RAM[self.PC + 1]
 
-    def do_display_instruction(self, opcode, screen):
+    def do_display_instruction_old(self, opcode, screen):
         # See https://laurencescotford.com/chip-8-on-the-cosmac-vip-drawing-sprites/ for behavior
         # if sprite is being entirely written off screen.
         x = self.V[opcode >> 8 & 0xF] & 0x3F
@@ -205,7 +241,7 @@ class C8Computer:
                 else:
                     self.sound_register_last_tick_time = curtime
 
-    def cycle(self, screen):
+    def cycle_old(self, screen):
         # decrement timers
         if self.delay_register > 0 or self.sound_register > 0:
             self.decrement_sound_delay_registers()
@@ -275,7 +311,8 @@ class C8Computer:
             elif oper == 0x5:
                 if vx > vy:
                     notborrow = 1
-                else: notborrow = 0
+                else:
+                    notborrow = 0
                 self.V[reg1] = (vx - vy) & 0xFF
                 self.V[0xF] = notborrow
             elif oper == 0x6:  # Shift Right by 1
@@ -407,6 +444,352 @@ class C8Computer:
         if increment_pc:
             self.PC += 2
 
+
+    def _0_opcodes(self, opcode, vx, vy, n, kk, nnn):
+        if opcode == 0x00E0:
+            # 00E0 - CLS
+            # clear the screen
+            self.screen.clear()
+        elif opcode == 0x00EE:
+            # 00EE - RET
+            # Return from a subroutine
+            assert len(self.stack) > 0
+            self.PC = self.stack.pop()
+        else:
+            raise InvalidOpCodeException(opcode)
+        return True
+
+    def _1nnn(self, opcode, vx, vy, n, kk, nnn):
+        # 1nnn - JP addr
+        # Jump to location nnn
+        self.PC = nnn
+        return False
+
+    def _2nnn(self, opcode, vx, vy, n, kk, nnn):
+        # 2nnn - CALL addr
+        # Call subroutine at nnn
+        self.stack.append(self.PC)
+        # Technically - should check for stack overflow but not going to worry about it
+        self.PC = nnn
+        return False
+
+    def _3xkk(self, opcode, vx, vy, n, kk, nnn):
+        # 3xkk - SE Vx, byte
+        # Skip next instruction if Vx == kk
+        print("{} : vx:{} / kk:{}".format(hex(opcode), hex(self.V[vx]), hex(kk)))
+        if self.V[vx] == kk:
+            self.PC += 2
+        return True
+
+    def _4xkk(self, opcode, vx, vy, n, kk, nnn):
+        # 4xkk - SNE Vx, byte
+        # Skip next instruction if Vx != kk
+        if self.V[vx] != kk:
+            self.PC += 2
+        return True
+
+    def _5xy0(self, opcode, vx, vy, n, kk, nnn):
+        # 5xy0 - SE Vx, Vy
+        # Skip next instruction if Vx == Vy
+        if n != 0:
+            raise InvalidOpCodeException(opcode)
+        if self.V[vx] == self.V[vy]:
+            self.PC += 2
+        return True
+
+    def _6xkk(self, opcode, vx, vy, n, kk, nnn):
+        # 6xkk - LD Vx, byte
+        # Set Vx = kk
+        self.V[vx] = kk
+        return True
+
+    def _7xkk(self, opcode, vx, vy, n, kk, nnn):
+        # 7xkk - ADD Vx, byte
+        # Add value in kk to vx, stores result in vx, does NOT set overflow flag
+        print("{} : old {} / new {}".format(opcode, self.V[vx], (self.V[vx] + kk) & 0xFF))
+        self.V[vx] = (self.V[vx] + kk) & 0xFF
+        return True
+
+
+    def invalid_op(self, opcode, vx, vy):
+        raise InvalidOpCodeException(opcode)
+
+    def _8xy0(self, opcode, vx, vy):
+        # 8xy0 - LD Vx, Vy
+        # Set Vx = Vy
+        self.V[vx] = self.V[vy]
+        return True
+
+    def _8xy1(self, opcode, vx, vy):
+        # 8xy1 - OR Vx, Vy
+        # Set Vx = Vx OR Vy
+        self.V[vx] = self.V[vx] | self.V[vy]
+        return True
+
+    def _8xy2(self, opcode, vx, vy):
+        # 8xy2 - AND Vx, Vy
+        # Set Vx = Vx AND Vy
+        self.V[vx] = self.V[vx] & self.V[vy]
+        return True
+
+    def _8xy3(self, opcode, vx, vy):
+        # 8xy3 - XOR Vx, Vy
+        # Set Vx = Vx XOR Vy
+        self.V[vx] = self.V[vx] ^ self.V[vy]
+        return True
+
+    def _8xy4(self, opcode, vx, vy):
+        # 8xy4 - ADD Vx, Vy
+        # Set Vx = Vx + Vy, set VF = carry.  Must be done in this order.
+        sum = self.V[vx] + self.V[vy]
+        self.V[vx] = sum & 0xFF
+        if sum > 255:
+            self.V[0xF] = 1
+        else:
+            self.V[0xF] = 0
+        return True
+
+    def _8xy5(self, opcode, vx, vy):
+        # 8xy5 - SUB Vx, Vy
+        # Set Vx = Vx - Vy.  Set VF = NOT borrow (VF = 1 if Vx > Vy)
+        if self.V[vx] > self.V[vy]:
+            notborrow = 1
+        else:
+            notborrow = 0
+        self.V[vx] = (self.V[vx] - self.V[vy]) & 0xFF
+        self.V[0xF] = notborrow
+        return True
+
+    def _8xy6(self, opcode, vx, vy):
+        # 8xy6 - SHR Vx, Vy
+        # ORIGINAL IMPLEMENTATION: copy Vy into Vx, then shift Vx right by 1.
+        # MODERN IMPLEMENTATION: shift Vx right by 1 in place
+        # In both, VF is set to the least significant bit of Vx before the shift
+        # See: https://tobiasvl.github.io/blog/write-a-chip-8-emulator/#8xy6-and-8xye-shift
+        if SHIFT_VY_8XY6_8XYE:
+            self.V[vx] = self.V[vy]
+        lsb = self.V[vx] & 0x1
+        self.V[vx] = self.V[vx] >> 1
+        self.V[0xF] = lsb
+        return True
+
+    def _8xy7(self, opcode, vx, vy):
+        # 8xy7 - SUBN Vx, Vy
+        # Set Vx = Vy - Vx.  Set VF = NOT borrow (VF = 1 if Vy > Vx)
+        if self.V[vy] > self.V[vx]:
+            notborrow = 1
+        else:
+            notborrow = 0
+        self.V[vx] = (self.V[vy] - self.V[vx]) & 0xFF
+        self.V[0xF] = notborrow
+        return True
+
+    def _8xyE(self, opcode, vx, vy):
+        # 8xyE - SHL Vx, Vy
+        # ORIGINAL IMPLEMENTATION: copy Vy into Vx, then shift Vx left by 1.
+        # MODERN IMPLEMENTATION: shift Vx left by 1 in place.
+        # In both, VF is set to the most significant bit of Vx before the shift
+        if SHIFT_VY_8XY6_8XYE:
+            self.V[vx] = self.V[vy]
+        msb = self.V[vx] & 0x80
+        self.V[vx] = (self.V[vx] << 1) & 0xFF
+        self.V[0xF] = msb
+        return True
+
+    def _8_opcodes(self, opcode, vx, vy, n, kk, nnn):
+        return self._8_operations[n](opcode, vx, vy)
+
+    def _9xy0(self, opcode, vx, vy, n, kk, nnn):
+        # 9xy0 - SNE Vx, Vy
+        # Skip next instruction if Vx != Vy
+        if n != 0:
+            raise InvalidOpCodeException(opcode)
+        if self.V[vx] != self.V[vy]:
+            self.PC += 2
+        return True
+
+    def _Annn(self, opcode, vx, vy, n, kk, nnn):
+        # Annn - LD I, addr
+        # The value of register I is set to nnn
+        self.I = nnn
+        return True
+
+    def _Bnnn(self, opcode, vx, vy, n, kk, nnn):
+        # Bnnn - JP V0, addr
+        # The program counter is set to nnn plus the value of V0
+        self.PC = nnn + self.V[0]
+        return False
+
+    def _Cxkk(self, opcode, vx, vy, n, kk, nnn):
+        # Cxkk - RND Vx, byte
+        # Set Vx = random byte AND kk
+        self.V[vx] = random.randrange(0, 255) & kk
+        return True
+
+    def _Dxyn(self, opcode, vx, vy, n, kk, nnn):
+        # See https://laurencescotford.com/chip-8-on-the-cosmac-vip-drawing-sprites/ for behavior
+        # if sprite is being entirely written off screen.
+        x = self.V[vx] & 0x3F
+        y = self.V[vy] & 0x1F
+        memloc = self.I
+        collision = 0
+        for i in range(n):
+            if self.screen.xor8px(x, y + i, self.RAM[memloc]):
+                collision = 1
+            memloc += 1
+        self.V[0xF] = collision
+        return True
+
+    def _E_opcodes(self, opcode, vx, vy, n, kk, nnn):
+        if kk == 0x9E:
+            # Ex9E - SKP Vx
+            # Skip next instruction if key with value of Vx is pressed
+            if self.key_pressed is not None and self.key_pressed == self.V[vx]:
+                self.PC += 2
+        elif kk == 0xA1:
+            # ExA1 - SKNP Vx
+            # Skip next instruction if key with value of Vx is NOT pressed
+            if self.key_pressed is None or self.key_pressed != self.V[vx]:
+                self.PC += 2
+        else:
+            raise InvalidOpCodeException(opcode)
+        return True
+
+    def _Fx07(self, vx):
+        # Fx07 - LD Vx, DT
+        # The value of the Delay Timer is placed into Vx.
+        self.V[vx] = self.delay_register
+        return True
+
+    def _Fx0A(self, vx):
+        # Fx0A - LD, Vx, Key
+        # Wait for a key press, store the value of the key in Vx
+        # NOTE: The original CHIP-8 waited until a key was pressed and then released.
+        # Cowgod's definition is unclear on this point.
+        increment_pc = False  # assume we block here.
+        if not self.blocking_on_fx0a:
+            self.blocking_on_fx0a = True
+            self.fx0a_key_pressed = None
+            self.fx0a_key_up = None
+        else:
+            if self.fx0a_key_up is None:
+                pass  # do nothing
+            else:
+                self.V[vx] = self.fx0a_key_up
+                self.blocking_on_fx0a = False
+                self.fx0a_key_up = None
+                self.fx0a_key_pressed = None
+                increment_pc = True
+        return increment_pc
+
+    def _Fx15(self, vx):
+        # Fx15 - LD DT, Vx
+        # Set Delay Timer = Vx
+        self.delay_register = self.V[vx]
+        if self.delay_register > 0:
+            self.delay_register_last_tick_time = datetime.datetime.now()
+        return True
+
+    def _Fx18(self, vx):
+        # Fx18 - LD ST, Vx
+        # Set Sound Timer = Vx
+        self.sound_register = self.V[vx]
+        if self.sound_register > 0:
+            self.sound_register_last_tick_time = datetime.datetime.now()
+            self.beep.play(-1)
+        return True
+
+    def _Fx1E(self, vx):
+        # Fx1E - Set I = I + Vx - do not set the overflow flag
+        self.I += self.V[vx] & 0xFFF
+        return True
+
+    def _Fx29(self, vx):
+        # Fx29 - LD F, Vx
+        # Set I = location of sprite for digit Vx ("F" = Font)
+        # each character is 5 bytes, with "0" starting at 0x00 in memory
+        assert (self.V[vx] <= 0xF)
+        self.I = 5 * self.V[vx]
+        return True
+
+    def _Fx33(self, vx):
+        # Fx33 - LD B, Fx
+        # Store binary coded decimal value of Vx in memory locations I, I+1, I+2
+        # Convert Vx to base 10, place the hundreds digit in I, tens digit in I+1, ones in I+2
+        val = self.V[vx]
+        hundreds = val // 100
+        tens = (val - (100 * hundreds)) // 10
+        ones = val % 10
+        self.RAM[self.I] = hundreds
+        self.RAM[self.I + 1] = tens
+        self.RAM[self.I + 2] = ones
+        return True
+
+    def _Fx55(self, vx):
+        # Fx55 - LD[I], Vx
+        # Store registers V0 through Vx in memory starting at location I
+        # Note that in the original CHIP-8 on the COSMAC VIP, I was incremented during this
+        # loop.  See: https://laurencescotford.com/chip-8-on-the-cosmac-vip-loading-and-saving-variables/
+        # However, modern interpreters do not increment I.  So need a config option in order to pass.
+        oldI = self.I
+        for i in range(vx + 1):
+            self.RAM[self.I] = self.V[i]
+            self.I += 1
+        if not INCREMENT_I_FX55_FX65:
+            self.I = oldI
+        return True
+
+    def _Fx65(self, vx):
+        # Fx65 - LD Vx, [I]
+        # Read values from memory starting at location I into registers V0 through Vx
+        oldI = self.I
+        for i in range(vx + 1):
+            self.V[i] = self.RAM[self.I]
+            self.I += 1
+        if not INCREMENT_I_FX55_FX65:
+            self.I = oldI
+        return True
+
+    def _F_opcodes(self, opcode, vx, vy, n, kk, nnn):
+        if kk in self._F_operations.keys():
+            return self._F_operations[kk](vx)
+        else:
+            raise InvalidOpCodeException(opcode)
+
+    def cycle(self, screen):
+        '''
+        Instructions have one of 6 patterns:
+        All 4 bytes fixed:
+            00E0, 00EE
+        Operation + nnn (address)
+            1nnn, 2nnn, Annn, Bnnn
+        Operation + Vx + kk (byte)
+            3xkk, 4xkk, 6xkk, 7xkk, Cxkk
+        Operation + Vx + Vy + nibble-type
+            5xy0, 8xy0, 8xy1, 8xy2, 8xy3,
+            8xy4, 8xy5, 8xy6, 8xy7, 8xye
+        Operation + Vx + Vy + n (nibble)
+            Dxyn
+        Operation + Vx + byte-type
+            Ex9E, ExA1, Fx07, Fx0A, Fx15,
+            Fx18, Fx1E, Fx29, Fx33, Fx55,
+            Fx65
+
+        To minimize redundant code, calculate all the possible ways
+        to parse the opcode and then later use only the ones that are needed
+        '''
+
+        opcode = self.fetch()
+        operation = opcode >> 12
+        vx = opcode >> 8 & 0xF
+        vy = opcode >> 4 & 0xF
+        n = opcode & 0xF
+        nnn = opcode & 0xFFF
+        kk = opcode & 0xFF
+        increment_pc = self.operation_list[operation](opcode, vx, vy, n, kk, nnn)
+        if increment_pc:
+            self.PC += 2
+
 class C8Screen:
     def __init__(self, window, pygame, xsize=64, ysize=32):
         self.xsize = xsize
@@ -484,7 +867,8 @@ def main():
     beep = pygame.mixer.Sound(build_pygame_sound_samples())
     beep.set_volume(0.1)
 
-    c8 = C8Computer(beep)
+    myscreen = C8Screen(window, pygame)
+    c8 = C8Computer(myscreen, beep)
 
     # c8.load_rom("IBMLogo.ch8")  # PASSES
 
@@ -499,9 +883,10 @@ def main():
     # c8.load_rom("test_opcode.ch8")   # PASSES
 
     # https://github.com/Timendus/chip8-test-suite/
-    # INCREMENT_I_FX55_FX65 = True  # to be faithful to the CHIP-8
-    # SHIFT_VY_8XY6_8XYE = True
-    # c8.load_rom("chip8-test-suite.ch8")  # PASSES but haven't tested keyboard yet
+    INCREMENT_I_FX55_FX65 = True  # to be faithful to the CHIP-8
+    SHIFT_VY_8XY6_8XYE = True
+    INSTRUCTION_DELAY = 1 # run fast
+    c8.load_rom("chip8-test-suite.ch8")
 
     # INSTRUCTION_DELAY = 150 # 350
     # DISPLAY_DELAY = 600 # 8333
@@ -511,18 +896,18 @@ def main():
     # DISPLAY_DELAY = 600  # 8333
     # c8.load_rom("Tetris.ch8")
 
-    INSTRUCTION_DELAY = 150  # 350
-    DISPLAY_DELAY = 600  # 8333
-    c8.load_rom("AstroDodge.ch8")
+    # INSTRUCTION_DELAY = 150  # 350
+    # DISPLAY_DELAY = 600  # 8333
+    # c8.load_rom("AstroDodge.ch8")
 
     run = True
-    myscreen = C8Screen(window, pygame)
+
 
     start_time = datetime.datetime.now()
     num_instr = 0
 
     timer_event = pygame.USEREVENT + 1
-    # pygame.time.set_timer(timer_event, 1)  # 17ms ~= 60Hz
+    pygame.time.set_timer(timer_event, 1)  # 17ms ~= 60Hz
 
     last_instruction_time = datetime.datetime.now()
 
@@ -547,6 +932,7 @@ def main():
                         c8.fx0a_key_up = KEYMAPPING[event.key]
                         c8.fx0a_key_pressed = None
             elif event.type == timer_event:
+                c8.decrement_sound_delay_registers()
                 pass
                 # if myscreen.needs_draw:
                 #    myscreen.draw()
@@ -560,10 +946,11 @@ def main():
                 c8.cycle(myscreen)
                 num_instr += 1
                 last_instruction_time = curtime
-                if myscreen.needs_draw:
-                    displaydiff = ((curtime - myscreen.last_draw_time).microseconds) // DISPLAY_DELAY
-                    if displaydiff > 0:
-                        myscreen.draw()
+                # if myscreen.needs_draw:
+                if num_instr % 8 == 0:   # logic is that the CPU runs at 500 Hz and display at 60 Hz or 1/8th, roughly
+                    # displaydiff = ((curtime - myscreen.last_draw_time).microseconds) // DISPLAY_DELAY
+                    # if displaydiff > 0:
+                    myscreen.draw()
 
             except:
                 c8.debug_dump()
