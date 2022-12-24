@@ -7,12 +7,12 @@ SCALE_FACTOR = 8
 PIXEL_OFF = (0, 0, 0)
 PIXEL_ON = (255, 255, 255)
 
-# Config options to pass tests
+# Config options to cover differences between modern CHIP-8 interpreters and the original
 INCREMENT_I_FX55_FX65 = False  # False is the modern way; True matches original
 SHIFT_VY_8XY6_8XYE = False  # False is the modern way; True matches original
 # Tweak this per ROM - how many microseconds to wait before executing an instruction.  Smaller means more frequent
 # instruction executions, which makes things faster.
-INSTRUCTION_DELAY = 250
+INSTRUCTION_DELAY = 2000
 
 
 # The keyboard layout for the CHIP-8 assumes:
@@ -21,7 +21,12 @@ INSTRUCTION_DELAY = 250
 #   7 8 9 E
 #   A 0 B F
 #
-# Mapping that to our keyboard we use the keys starting with 1, 2, 3, 4
+# We map this to the following keys on our keyboard:
+#   1 2 3 4
+#   Q W E R
+#   A S D F
+#   Z X C V
+
 KEYMAPPING = {
     pygame.K_1: 0x01,
     pygame.K_2: 0x02,
@@ -40,6 +45,7 @@ KEYMAPPING = {
     pygame.K_c: 0x0B,
     pygame.K_v: 0x0F
 }
+
 
 class InvalidOpCodeException(Exception):
     pass
@@ -73,7 +79,7 @@ class C8Computer:
         self.sound_register_last_tick_time = None
         # Program Counter
         self.PC = 0x200
-        # One could use RAM for the stack and use a stack pointer but this is easier
+        # One could use RAM for the stack and use a stack pointer but a python List is simpler.
         self.stack = []
         self.load_font_sprites()
         self.beep = beep
@@ -120,7 +126,7 @@ class C8Computer:
     def debug_dump(self):
         outfile = open("debug.txt", "w")
         outfile.write("PC: 0x{}\n".format(hex(self.PC).upper()[2:]))
-        outfile.write("Next instruction: 0x{}\n".format(hex(self.RAM[self.PC] << 8 | self.RAM[self.PC + 1]).upper()[2:]))
+        outfile.write("Next instr.: 0x{}\n".format(hex(self.RAM[self.PC] << 8 | self.RAM[self.PC + 1]).upper()[2:]))
         outfile.write("I: 0x{}\n".format(hex(self.I).upper()[2:]))
         for i in range(16):
             outfile.write("V{}: 0x{}".format(hex(i).upper()[2], hex(self.V[i])[2:].zfill(2).upper()))
@@ -420,7 +426,7 @@ class C8Computer:
                 collision = 1
             memloc += 1
         self.V[0xF] = collision
-        self.screen.draw_rect_list.append((x, y, min([x + 8, self.screen.xsize-1]), min([y + n, self.screen.ysize-1])))
+        self.screen.draw_rect_list.append((x, y, min([x + 8, self.screen.xsize]), min([y + n, self.screen.ysize])))
         return True
 
     def _E_opcodes(self, opcode, vx, vy, n, kk, nnn):
@@ -673,16 +679,13 @@ def main():
     SHIFT_VY_8XY6_8XYE = True
     c8.load_rom("chip8-test-suite.ch8")
 
-    # INSTRUCTION_DELAY = 150 # 350
-    # DISPLAY_DELAY = 600 # 8333
+    # INSTRUCTION_DELAY = 2500
     # c8.load_rom("BRIX.ch8")
 
     # INSTRUCTION_DELAY = 150  # 350
-    # DISPLAY_DELAY = 600  # 8333
     # c8.load_rom("Tetris.ch8")
 
     # INSTRUCTION_DELAY = 150  # 350
-    # DISPLAY_DELAY = 600  # 8333
     # c8.load_rom("AstroDodge.ch8")
 
     run = True
@@ -691,7 +694,7 @@ def main():
     num_instr = 0
 
     timer_event = pygame.USEREVENT + 1
-    pygame.time.set_timer(timer_event, 1)  # 17ms ~= 60Hz
+    pygame.time.set_timer(timer_event, 17)  # 17ms ~= 60Hz
 
     last_instruction_time = datetime.datetime.now()
 
@@ -720,7 +723,6 @@ def main():
 
         curtime = datetime.datetime.now()
         tickdiff = ((curtime - last_instruction_time).microseconds) // INSTRUCTION_DELAY
-        # aiming for 700 instructions per second
         if tickdiff > 0:
             try:
                 c8.cycle(myscreen)
