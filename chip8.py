@@ -78,7 +78,7 @@ class C8Computer:
         self.load_font_sprites()
         self.beep = beep
         self.screen = screen
-        self.key_pressed = None  # used for the Ex9E and ExA1 instructions
+        self.keys_pressed = [0 for i in range(16)]  # used for the Ex9E and ExA1 instructions
         self.blocking_on_fx0a = False
         self.fx0a_key_pressed = None
         self.fx0a_key_up = None
@@ -426,12 +426,12 @@ class C8Computer:
         if kk == 0x9E:
             # Ex9E - SKP Vx
             # Skip next instruction if key with value of Vx is pressed
-            if self.key_pressed is not None and self.key_pressed == self.V[vx]:
+            if self.keys_pressed[self.V[vx]]:
                 self.PC += 2
         elif kk == 0xA1:
             # ExA1 - SKNP Vx
             # Skip next instruction if key with value of Vx is NOT pressed
-            if self.key_pressed is None or self.key_pressed != self.V[vx]:
+            if not self.keys_pressed[self.V[vx]]:
                 self.PC += 2
         else:
             raise InvalidOpCodeException(opcode)
@@ -686,15 +686,15 @@ def main():
                 c8.debug_dump()
             elif event.type == pygame.KEYDOWN:
                 if event.key in KEYMAPPING.keys():
-                    c8.key_pressed = KEYMAPPING[event.key]
+                    c8.keys_pressed[KEYMAPPING[event.key]] = 1
                     if c8.blocking_on_fx0a:
                         c8.fx0a_key_pressed = KEYMAPPING[event.key]
             elif event.type == pygame.KEYUP:
                 # we can get into a weird state if multiple keys are pressed, one, one is let up, and the other is
                 # pressed.
-                c8.key_pressed = None
-                if c8.blocking_on_fx0a:
-                    if event.key in KEYMAPPING.keys():
+                if event.key in KEYMAPPING.keys():
+                    c8.keys_pressed[KEYMAPPING[event.key]] = 0
+                    if c8.blocking_on_fx0a:
                         if c8.fx0a_key_pressed == KEYMAPPING[event.key]:
                             c8.fx0a_key_up = KEYMAPPING[event.key]
                             c8.fx0a_key_pressed = None
