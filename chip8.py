@@ -420,6 +420,7 @@ class C8Computer:
                 collision = 1
             memloc += 1
         self.V[0xF] = collision
+        self.screen.draw_rect_list.append((x, y, min([x + 8, self.screen.xsize-1]), min([y + n, self.screen.ysize-1])))
         return True
 
     def _E_opcodes(self, opcode, vx, vy, n, kk, nnn):
@@ -579,6 +580,9 @@ class C8Screen:
         self.pygame = pygame
         self.vram = array('B', [0 for i in range(self.xsize * self.ysize)])
         self.window = window
+        self.num_renders = 0
+        self.render_time_ps = 0
+        self.draw_rect_list = []
         self.clear()
         self.needs_draw = False
         self.last_draw_time = datetime.datetime.now()
@@ -586,6 +590,7 @@ class C8Screen:
     def clear(self):
         for i in range(self.xsize * self.ysize):
             self.vram[i] = 0
+        self.draw_rect_list.append((0, 0, self.xsize, self.ysize))
         self.draw()
 
     def setpx(self, x, y, val):
@@ -622,20 +627,31 @@ class C8Screen:
         return collision
 
     def draw(self):
-        for x in range(64):
-            for y in range(32):
-                startx = x*SCALE_FACTOR
-                starty = y*SCALE_FACTOR
-                if self.vram[(y * self.xsize) + x] == 0:
-                    color = PIXEL_OFF
-                else:
-                    color = PIXEL_ON
-                for i in range(SCALE_FACTOR):
-                    for j in range(SCALE_FACTOR):
-                        self.window.set_at((startx + i, starty + j), color)
-        pygame.display.flip()
+        self.num_renders += 1
+        start_time = datetime.datetime.now()
+        pygamerects = []
+        for item in self.draw_rect_list:
+            for x in range(item[0], item[2]):
+                for y in range(item[1], item[3]):
+                    startx = x * SCALE_FACTOR
+                    starty = y * SCALE_FACTOR
+                    if self.vram[(y * self.xsize) + x] == 0:
+                        color = PIXEL_OFF
+                    else:
+                        color = PIXEL_ON
+                    for i in range(SCALE_FACTOR):
+                        for j in range(SCALE_FACTOR):
+                            self.window.set_at((startx + i, starty + j), color)
+            rectx = item[0] * SCALE_FACTOR
+            recty = item[1] * SCALE_FACTOR
+            rect_width = (item[2] - item[0]) * SCALE_FACTOR
+            rect_height = (item[3] - item[1]) * SCALE_FACTOR
+            pygamerects.append(pygame.Rect(rectx, recty, rect_width, rect_height))
+        pygame.display.update(pygamerects)
         self.needs_draw = False
+        self.draw_rect_list = []
         self.last_draw_time = datetime.datetime.now()
+        self.render_time_ps += (self.last_draw_time - start_time).microseconds
 def main():
 
     global INCREMENT_I_FX55_FX65, SHIFT_VY_8XY6_8XYE, INSTRUCTION_DELAY
@@ -724,6 +740,8 @@ def main():
     print("End: {}".format(end_time))
     print("Duration: {} sec.".format(duration))
     print("Performance: {} instructions per second".format(num_instr / duration))
+    print("Screen num renders: {}".format(myscreen.num_renders))
+    print("Average microseconds per render: {}".format(myscreen.render_time_ps / myscreen.num_renders))
 
     pygame.quit()
 
