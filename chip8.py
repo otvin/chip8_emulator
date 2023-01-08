@@ -208,7 +208,7 @@ class C8Computer:
     def decrement_sound_delay_registers(self):
         curtime = datetime.datetime.now()
         if self.delay_register > 0:
-            tickdiff = ((curtime - self.delay_register_last_tick_time).microseconds) // 16666
+            tickdiff = int((curtime - self.delay_register_last_tick_time).total_seconds() * 1000000) // 16666
             if tickdiff > 0:
                 self.delay_register -= tickdiff
                 if self.delay_register <= 0:
@@ -217,7 +217,7 @@ class C8Computer:
                 else:
                     self.delay_register_last_tick_time = curtime
         if self.sound_register > 0:
-            tickdiff = ((curtime - self.sound_register_last_tick_time).microseconds) // 16666
+            tickdiff = int((curtime - self.sound_register_last_tick_time).total_seconds() * 1000000)  // 16666
             if tickdiff > 0:
                 self.sound_register -= tickdiff
                 if self.sound_register <= 0:
@@ -657,7 +657,7 @@ class C8Screen:
         self.needs_draw = False
         self.draw_rect_list = []
         self.last_draw_time = datetime.datetime.now()
-        self.render_time_ps += (self.last_draw_time - start_time).microseconds
+        self.render_time_ps += (self.last_draw_time - start_time).total_seconds()
 def main():
 
     global INCREMENT_I_FX55_FX65, SHIFT_VY_8XY6_8XYE, INSTRUCTION_DELAY
@@ -722,7 +722,7 @@ def main():
 
 
         curtime = datetime.datetime.now()
-        tickdiff = ((curtime - last_instruction_time).microseconds) // INSTRUCTION_DELAY
+        tickdiff = ((curtime - last_instruction_time).total_seconds() * 1000000) / INSTRUCTION_DELAY
         if tickdiff > 0:
             try:
                 c8.cycle(myscreen)
@@ -743,7 +743,7 @@ def main():
     print("Duration: {} sec.".format(duration))
     print("Performance: {} instructions per second".format(num_instr / duration))
     print("Screen num renders: {}".format(myscreen.num_renders))
-    print("Average microseconds per render: {}".format(myscreen.render_time_ps / myscreen.num_renders))
+    print("Average microseconds per render: {}".format((1000000 * myscreen.render_time_ps) / myscreen.num_renders))
 
     pygame.quit()
 
