@@ -679,15 +679,6 @@ def main():
     SHIFT_VY_8XY6_8XYE = True
     c8.load_rom("chip8-test-suite.ch8")
 
-    # INSTRUCTION_DELAY = 2500
-    # c8.load_rom("BRIX.ch8")
-
-    # INSTRUCTION_DELAY = 150  # 350
-    # c8.load_rom("Tetris.ch8")
-
-    # INSTRUCTION_DELAY = 150  # 350
-    # c8.load_rom("AstroDodge.ch8")
-
     run = True
 
     start_time = datetime.datetime.now()
